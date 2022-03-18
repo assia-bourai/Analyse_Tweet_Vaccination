@@ -1,0 +1,336 @@
+---
+title: "Projet co-clustering sujet 2"
+output: html_notebook
+---
+
+
+M2 AMSD
+
+- BOURAÏ Assia 
+
+
+
+
+
+Chargement des données
+```{r}
+data = read.csv("vaccination_tweets.csv", encoding = "UTF-8")
+```
+
+
+```{r}
+texts = data[,"text"]
+```
+
+```{r}
+head(texts)
+```
+Nettoyage du texte 
+
+```{r}
+#retrait du saut de ligne \n
+texts <- gsub("\n"," ",texts)
+#retrait des URL
+texts <- gsub('http\\S+\\s*',"",texts)
+#remplacement de certains charactères spéciaux de liaison par espace
+texts <- gsub("[\\/'\\-]", " ", texts)
+#retrait des espaces en trop
+texts <- gsub("\\s+"," ",texts)
+#retrait des "\"
+texts <- gsub("[\\]","",texts)
+#retrait des espaces en fin de texte
+texts <- gsub("\\s*$","",texts)
+#harmonisation de la casse - tout mettre en minuscule
+texts <- tolower(texts)
+#retrait des accents
+texts <- gsub("[éèê]","e",texts)
+texts <- gsub("[àâ]","a",texts)
+texts <- gsub("[ùû]","u",texts)
+
+#retrait des ...
+texts <- gsub("[[:alnum:]_]*(…)","",texts)
+
+#retrait des hashtags
+texts <- gsub("#","",texts)
+#retrait des pseudos
+texts <- gsub("@[[:alnum:]_]*( |:|$)","",texts)
+
+# retrait des caractères non ASCII (emoji, ...)
+texts <- gsub("[^\x01-\x7F]", "", texts)
+```
+
+```{r}
+head(texts)
+```
+```{r}
+#importation de la libraire
+library(tm)
+## Loading required package: NLP
+#transformation de la liste des tweets en un format interne
+corpus <- Corpus(VectorSource(texts))
+print(corpus)
+```
+```{r}
+print(corpus$content[1:6])
+```
+
+```{r}
+#retrait des ponctuations
+corpus <- tm_map(corpus,removePunctuation)
+#retrait des nombres
+corpus <- tm_map(corpus,removeNumbers)
+#retrait des stopwords (mots outils)
+corpus <- tm_map(corpus,removeWords,stopwords("english"))
+#retirer les espaces en trop (s'il en reste encore)
+corpus <- tm_map(corpus,stripWhitespace)
+```
+```{r}
+print(corpus$content[1:6])
+```
+Création de la matrice documents-termes
+
+```{r}
+mdt <- DocumentTermMatrix(corpus,control=list(weighting=weightBin))
+print(mdt)
+```
+
+```{r}
+# Termes fréquents (apparaissent plus de 200 fois)
+print(findFreqTerms(mdt,200))
+```
+```{r}
+# On enlève les termes les plus sparses pour réduire la taille de la matrice
+mdt_trim = removeSparseTerms(mdt, 0.998)
+
+# Suppression des lignes avec que des 0
+rowTotals = apply(mdt_trim , 1, sum) 
+mdt_trim = mdt_trim[rowTotals> 0, ] 
+
+print(mdt_trim)
+```
+
+```{r}
+X = as.matrix(mdt_trim)
+
+```
+
+```{r}
+#Nuage de mots
+library(wordcloud)
+wordcloud(colnames(X),colSums(X),min.freq=50,scale=c(2,.5),colors=brewer.pal(6, "Dark2"))
+```
+2. Analyse Factorielle
+
+
+PCA
+```{r}
+library(FactoMineR)
+library(Factoshiny)
+
+res.pca = PCA(X, scale.unit=F)
+```
+
+
+
+
+```{r}
+
+barplot(res.pca$eig[,2],main="Variance expliquée (%)",
+names.arg=1:nrow(res.pca$eig), xlab="axes")
+```
+
+```{r}
+sortedIndContr = sort(rowSums(res.pca$ind$contrib[,1:2]), decreasing=T, index.return=T)
+barplot(sortedIndContr$x[1:100], main="100 plus gros individus contributeurs")
+# il n'y pas vraiment d'invidus prépondérant en terme de contribution sur les 2 premiers axes si on regarde les 100 plus gros contributeurs.
+
+sortedVarContr = sort(rowSums(res.pca$var$contrib[,1:2]), decreasing=T, index.return=T)
+sortedVarContr$ix[1:10]
+sortedVarContr$x[1:10]/sum(res.pca$var$contrib[,1:2])# pourcentage de contribution sur les 2 premiers axes des 10 plus grosses variables
+barplot(sortedVarContr$x[1:10], cex.names=.7, las=2, main="10 plus grandes variables contributrices")
+# On voit que les premières variables sont très prépondérantes par rapport aux suivantes en terme de contribution. Cela n'est pas étonnant en l'absence de pondération tf-idf. Les variables prépondérantes correspondents aux termes les plus fréquents
+```
+
+
+
+
+3. Clustering
+
+```{r}
+library(Matrix)
+# Construction d'une matrice sparse pour faciliter le calcul de la distance
+X_sparse = sparseMatrix(mdt_trim$i, mdt_trim$j, x=mdt_trim$v, dims=c(mdt_trim$nrow, mdt_trim$ncol), repr="T")
+
+```
+
+```{r}
+library(skmeans)
+library(cluster)
+
+for (i in 2:6){
+  clust.km = skmeans(X_sparse, k=i)
+  plot(silhouette(clust.km), col=1:i, border=NA)
+}
+```
+```{r}
+# Au vu des résultats des silhouettes, on retient k = 2 comme nombre de clusters
+clust.km = skmeans(X_sparse, k=2)
+```
+
+```{r}
+table(clust.km$cluster)
+```
+
+
+4.Visualisation des clusters
+
+Visualisation avec PCA
+```{r}
+library(factoextra)
+fviz_cluster(list(data=res.pca$ind$coord[,1:2], cluster=clust.km$cluster), geom="point", ellipse=F, show.clust.cent=F, main="Visualisation avec PCA")
+
+```
+Visualisation avec UMAP
+```{r}
+library(umap)
+X.umap = umap(X, n_components=2, metric="cosine")
+
+```
+
+
+```{r}
+X.umap.layout = as.data.frame(X.umap$layout)
+fviz_cluster(list(data=X.umap.layout, cluster=clust.km$cluster), ellipse=F, show.clust.cent = F, geom="point", main="Visualisation avec UMAP")
+```
+Umap n'a pas réussi à bien séparer les différents points.
+
+Visualisation avec TSNE
+
+
+```{r}
+library(Rtsne)
+X.tsne = as.data.frame(Rtsne(X,dim=2, check_duplicates = FALSE)$Y)
+fviz_cluster(list(data=X.tsne, cluster=clust.km$cluster), ellipse=F, show.clust.cent = F, geom="point", main="Visualisation avec TSNE")
+```
+
+
+Clusters de skmeans
+```{r}
+X1 = X[which(clust.km$cluster == 1),]
+X2 = X[which(clust.km$cluster == 2),]
+```
+
+```{r}
+#Affichage des 10 mots les plus courants pour la classe 1
+freqMotsX1 <- colSums(X1)
+freqMotsX1 <- sort(freqMotsX1,decreasing=TRUE)
+print(freqMotsX1[1:10])
+```
+
+```{r}
+#Affichage des 10 mots les plus courants pour la classe 2
+freqMotsX2 <- colSums(X2)
+freqMotsX2 <- sort(freqMotsX2,decreasing=TRUE)
+print(freqMotsX2[1:10])
+```
+Les mots les plus courants sont les mêmes dans les deux clusters, à l'exception de pfizerbiontech qu'on ne retrouve pas dans le deuxième. Ce terme est peut-être l'élément discriminant entre les deux clusters.
+
+
+5. Co-Clustering
+
+
+```{r}
+library(blockcluster)
+out_cont<-coclusterContingency(X, nbcocluster=c(2,2))
+summary(out_cont)
+plot(out_cont)
+```
+
+
+
+
+```{r}
+dimnames(X)$Terms[which(out_cont@colclass == 1)]
+# Les termes fréquents ont été regroupés dans cette classe
+```
+```{r}
+coclust.classes = out_cont['rowclass']
+fviz_cluster(list(data=res.pca$ind$coord[,1:2], cluster=coclust.classes), geom="point", ellipse=F, show.clust.cent=F, main="Clusters des lignes issus du coclustering dans l'espace réduit par PCA")
+```
+
+6. Co-clustering avec la pondération Tf-IDF
+
+```{r}
+mdt_tfidf <- DocumentTermMatrix(corpus,control=list(weighting=weightTfIdf))
+print(mdt_tfidf)
+```
+
+```{r}
+# On enlève les termes les plus sparses pour réduire la taille de la matrice
+mdt_tfidf = removeSparseTerms(mdt_tfidf, 0.998)
+
+# Suppression des lignes avec que des 0
+rowTotals = apply(mdt_tfidf , 1, sum) 
+mdt_tfidf = mdt_tfidf[rowTotals> 0, ] 
+
+print(mdt_tfidf)
+```
+```{r}
+X_tfidf = as.matrix(mdt_tfidf)
+
+```
+
+```{r}
+coclust.tfidf <-coclusterContingency(X_tfidf, nbcocluster=c(2,2))
+summary(coclust.tfidf)
+plot(coclust.tfidf)
+# On obtient un meilleur ICL avec TF-IDF
+```
+
+```{r}
+dimnames(X_tfidf)$Terms[which(coclust.tfidf@colclass == 0)]
+# Les termes fréquents ont été regroupés dans cette classe
+```
+
+```{r}
+coclust2.classes = coclust.tfidf['rowclass']
+fviz_cluster(list(data=res.pca$ind$coord[,1:2], cluster=coclust2.classes), geom="point", ellipse=F, show.clust.cent=F, main="Clusters des lignes issus du coclustering dans l'espace réduit par PCA")
+```
+7. Modèles de Von-Mises Fischer
+
+```{r}
+library(movMF)
+library(wordspace)
+
+X_norm = normalize.rows(X) # on normalize les lignes pour avoir une hypersphère de rayon 1
+res.von = movMF(X_norm, k=2)
+```
+
+```{r}
+library(factoextra)
+pred = predict(res.von)
+
+fviz_cluster(list(data=res.pca$ind$coord[,1:2], cluster=pred), geom="point", ellipse=F, show.clust.cent=F, main="Clusters issus de Von-Mises Fischer visualisés dans l'espace réduit par PCA")
+# Le clustering semble avoir bien fonctionné
+```
+```{r}
+X1 = X[which(pred == 1),]
+X2 = X[which(pred == 2),]
+```
+
+```{r}
+#Affichage des 10 mots les plus courants pour la classe 1
+freqMotsX1 <- colSums(X1)
+freqMotsX1 <- sort(freqMotsX1,decreasing=TRUE)
+print(freqMotsX1[1:10])
+```
+
+```{r}
+#Affichage des 10 mots les plus courants pour la classe 2
+freqMotsX2 <- colSums(X2)
+freqMotsX2 <- sort(freqMotsX2,decreasing=TRUE)
+print(freqMotsX2[1:10])
+```
+Là encore, on retrouve une séparation entre les documents qui contiennent le terme pfizerbiontech et ceux qui ne le contiennent pas.
+
+En l'absence de modèle capturant la sémantique et/ou le contexte (Word2vec, BERT), il est difficile d'obtenir des clusters ne se basant pas uniquement sur les mots les plus fréquents pour faire la séparation.
